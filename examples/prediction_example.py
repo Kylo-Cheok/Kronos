@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import sys
 sys.path.append("../")
-from model import Kronos, KronosTokenizer, KronosPredictor
+from model import Kronos, KronosTokenizer, KronosPredictor, load_tokenizer, load_model
 
 
 def plot_prediction(kline_df, pred_df):
@@ -38,9 +38,9 @@ def plot_prediction(kline_df, pred_df):
     plt.show()
 
 
-# 1. Load Model and Tokenizer
-tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+# 1. Load Model and Tokenizer from local weights
+tokenizer = load_tokenizer("Kronos-Tokenizer-base")
+model = load_model("Kronos-base")
 
 # 2. Instantiate Predictor
 predictor = KronosPredictor(model, tokenizer, max_context=512)

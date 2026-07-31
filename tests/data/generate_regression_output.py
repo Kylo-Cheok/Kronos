@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from model import Kronos, KronosPredictor, KronosTokenizer
+from model import Kronos, KronosPredictor, KronosTokenizer, load_tokenizer, load_model
 
 
 TEST_DATA_ROOT = Path(__file__).parent
@@ -44,8 +44,8 @@ def generate_output(ctx_len: int) -> None:
         ctx_len : ctx_len + PRED_LEN
     ].reset_index(drop=True)
 
-    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base", revision=TOKENIZER_REVISION)
-    model = Kronos.from_pretrained("NeoQuasar/Kronos-small", revision=MODEL_REVISION)
+    tokenizer = load_tokenizer("Kronos-Tokenizer-base")
+    model = load_model("Kronos-base")
     tokenizer.eval()
     model.eval()
 

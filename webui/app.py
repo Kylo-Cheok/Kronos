@@ -15,10 +15,11 @@ warnings.filterwarnings('ignore')
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from model import Kronos, KronosTokenizer, KronosPredictor
+    from model import Kronos, KronosTokenizer, KronosPredictor, WEIGHTS
     MODEL_AVAILABLE = True
 except ImportError:
     MODEL_AVAILABLE = False
+    WEIGHTS = {}
     print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
 
 app = Flask(__name__)
@@ -29,33 +30,25 @@ tokenizer = None
 model = None
 predictor = None
 
-# Available model configurations
+# Available model configurations – uses local weights from D:\workspace\Kronos\weights
 AVAILABLE_MODELS = {
-    'kronos-mini': {
-        'name': 'Kronos-mini',
-        'model_id': 'NeoQuasar/Kronos-mini',
-        'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
-        'context_length': 2048,
-        'params': '4.1M',
-        'description': 'Lightweight model, suitable for fast prediction'
-    },
-    'kronos-small': {
-        'name': 'Kronos-small',
-        'model_id': 'NeoQuasar/Kronos-small',
-        'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
-        'context_length': 512,
-        'params': '24.7M',
-        'description': 'Small model, balanced performance and speed'
-    },
     'kronos-base': {
         'name': 'Kronos-base',
-        'model_id': 'NeoQuasar/Kronos-base',
-        'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
+        'model_id': WEIGHTS.get('Kronos-base', ''),
+        'tokenizer_id': WEIGHTS.get('Kronos-Tokenizer-base', ''),
         'context_length': 512,
         'params': '102.3M',
         'description': 'Base model, provides better prediction quality'
     }
 }
+
+# Mark which models are actually available on disk
+for key, cfg in list(AVAILABLE_MODELS.items()):
+    if cfg['model_id'] and os.path.isdir(cfg['model_id']) and cfg['tokenizer_id'] and os.path.isdir(cfg['tokenizer_id']):
+        cfg['available'] = True
+    else:
+        cfg['available'] = False
+        del AVAILABLE_MODELS[key]
 
 def load_data_files():
     """Scan data directory and return available data files"""
@@ -641,7 +634,7 @@ def load_model():
         
         model_config = AVAILABLE_MODELS[model_key]
         
-        # Load tokenizer and model
+        # Load tokenizer and model from local weights
         tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
         model = Kronos.from_pretrained(model_config['model_id'])
         

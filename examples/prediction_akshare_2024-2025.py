@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 
 # 添加项目路径以便导入自定义模块
 sys.path.append("../")
-from model import Kronos, KronosTokenizer, KronosPredictor
+from model import Kronos, KronosTokenizer, KronosPredictor, load_tokenizer, load_model
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
@@ -398,8 +398,8 @@ def main(stock_code="002354", stock_name="天娱数科", data_dir="./data", pred
     try:
         # 1. 加载模型和分词器
         print("\n步骤1: 加载Kronos模型和分词器...")
-        tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-        model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
+        tokenizer = load_tokenizer("Kronos-Tokenizer-base")
+        model = load_model("Kronos-base")
         print("✅ 模型加载完成")
 
         # 2. 实例化预测器

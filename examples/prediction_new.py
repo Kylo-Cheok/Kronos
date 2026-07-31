@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 # 添加项目路径以便导入自定义模块
 sys.path.append("../")
 try:
-    from model import Kronos, KronosTokenizer, KronosPredictor
+    from model import Kronos, KronosTokenizer, KronosPredictor, load_tokenizer, load_model
 except ImportError:
     print("⚠️ 无法导入Kronos模型，预测功能将不可用")
 
@@ -1166,8 +1166,8 @@ def run_comprehensive_kronos_prediction(stock_code, stock_name, data_dir, pred_d
         # 2. 加载模型和分词器
         print("\n步骤2: 加载Kronos模型和分词器...")
         try:
-            tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-            model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
+            tokenizer = load_tokenizer("Kronos-Tokenizer-base")
+            model = load_model("Kronos-base")
             print("✅ 模型加载完成 - 使用Kronos-base模型")
         except Exception as e:
             print(f"❌ 模型加载失败: {e}")

@@ -29,14 +29,14 @@ import akshare as ak
 import matplotlib.pyplot as plt
 import sys
 sys.path.append("../")
-from model import Kronos, KronosTokenizer, KronosPredictor
+from model import Kronos, KronosTokenizer, KronosPredictor, load_tokenizer, load_model
 
 save_dir = "./outputs"
 os.makedirs(save_dir, exist_ok=True)
 
-# Setting
-TOKENIZER_PRETRAINED = "NeoQuasar/Kronos-Tokenizer-base"
-MODEL_PRETRAINED = "NeoQuasar/Kronos-base"
+# Setting – local weights path
+TOKENIZER_PRETRAINED = "Kronos-Tokenizer-base"
+MODEL_PRETRAINED = "Kronos-base"
 DEVICE = "cpu"  # "cuda:0"
 MAX_CONTEXT = 512
 LOOKBACK = 400
@@ -158,8 +158,8 @@ def plot_result(df_hist, df_pred, symbol):
 
 def predict_future(symbol):
     print(f"🚀 Loading Kronos tokenizer:{TOKENIZER_PRETRAINED} model:{MODEL_PRETRAINED} ...")
-    tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_PRETRAINED)
-    model = Kronos.from_pretrained(MODEL_PRETRAINED)
+    tokenizer = load_tokenizer(TOKENIZER_PRETRAINED)
+    model = load_model(MODEL_PRETRAINED)
     predictor = KronosPredictor(model, tokenizer, device=DEVICE, max_context=MAX_CONTEXT)
 
     df = load_data(symbol)
