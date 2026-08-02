@@ -9,12 +9,16 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import comet_ml
+try:
+    import comet_ml
+except ImportError:
+    comet_ml = None
 
 # Ensure project root is in path
 sys.path.append('../')
 from config import Config
 from dataset import QlibDataset
+from direction_objective import DirectionAuxiliaryHead, compute_direction_objective
 from model.kronos import KronosTokenizer, Kronos
 # Import shared utilities
 from utils.training_utils import (
@@ -57,7 +61,17 @@ def create_dataloaders(config: dict, rank: int, world_size: int):
     return train_loader, val_loader, train_dataset, valid_dataset
 
 
-def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_size):
+def train_model(
+    model,
+    tokenizer,
+    direction_head,
+    device,
+    config,
+    save_dir,
+    logger,
+    rank,
+    world_size,
+):
     """
     The main training and validation loop for the predictor.
     """
@@ -68,8 +82,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
     train_loader, val_loader, train_dataset, valid_dataset = create_dataloaders(config, rank, world_size)
 
+    trainable_parameters = list(model.parameters()) + list(direction_head.parameters())
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_parameters,
         lr=config['predictor_learning_rate'],
         betas=(config['adam_beta1'], config['adam_beta2']),
         weight_decay=config['adam_weight_decay']
@@ -87,6 +102,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     for epoch_idx in range(config['epochs']):
         epoch_start_time = time.time()
         model.train()
+        direction_head.train()
         train_loader.sampler.set_epoch(epoch_idx)
 
         train_dataset.set_epoch_seed(epoch_idx * 10000 + rank)
@@ -105,13 +121,33 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
             # Forward pass and loss calculation
-            logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-            loss, s1_loss, s2_loss = model.module.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+            s1_logits, s2_logits, hidden_states = model(
+                token_in[0],
+                token_in[1],
+                batch_x_stamp[:, :-1, :],
+                return_context=True,
+            )
+            token_loss, s1_loss, s2_loss = model.module.head.compute_loss(
+                s1_logits,
+                s2_logits,
+                token_out[0],
+                token_out[1],
+            )
+            direction_result = compute_direction_objective(
+                direction_head,
+                hidden_states,
+                batch_x,
+                context_length=config['lookback_window'],
+                horizon=config['direction_horizon'],
+                close_index=config['feature_list'].index('close'),
+            )
+            direction_loss = direction_result['loss']
+            loss = token_loss + config['direction_loss_weight'] * direction_loss
 
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+            torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=3.0)
             optimizer.step()
             scheduler.step()
 
@@ -125,6 +161,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             if rank == 0 and logger:
                 lr = optimizer.param_groups[0]['lr']
                 logger.log_metric('train_predictor_loss_batch', loss.item(), step=batch_idx_global)
+                logger.log_metric('train_token_loss_batch', token_loss.item(), step=batch_idx_global)
+                logger.log_metric('train_direction_loss_batch', direction_loss.item(), step=batch_idx_global)
+                logger.log_metric('train_direction_accuracy_batch', direction_result['accuracy'].item(), step=batch_idx_global)
                 logger.log_metric('train_S1_loss_each_batch', s1_loss.item(), step=batch_idx_global)
                 logger.log_metric('train_S2_loss_each_batch', s2_loss.item(), step=batch_idx_global)
                 logger.log_metric('predictor_learning_rate', lr, step=batch_idx_global)
@@ -133,7 +172,12 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
         # --- Validation Loop ---
         model.eval()
+        direction_head.eval()
         tot_val_loss_sum_rank = 0.0
+        tot_val_token_loss_sum_rank = 0.0
+        tot_val_direction_loss_sum_rank = 0.0
+        tot_val_direction_correct_rank = 0.0
+        tot_val_direction_points_rank = 0
         val_batches_processed_rank = 0
         with torch.no_grad():
             for batch_x, batch_x_stamp in val_loader:
@@ -144,38 +188,97 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                val_loss, _, _ = model.module.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+                s1_logits, s2_logits, hidden_states = model(
+                    token_in[0],
+                    token_in[1],
+                    batch_x_stamp[:, :-1, :],
+                    return_context=True,
+                )
+                val_token_loss, _, _ = model.module.head.compute_loss(
+                    s1_logits,
+                    s2_logits,
+                    token_out[0],
+                    token_out[1],
+                )
+                direction_result = compute_direction_objective(
+                    direction_head,
+                    hidden_states,
+                    batch_x,
+                    context_length=config['lookback_window'],
+                    horizon=config['direction_horizon'],
+                    close_index=config['feature_list'].index('close'),
+                )
+                val_direction_loss = direction_result['loss']
+                val_loss = (
+                    val_token_loss
+                    + config['direction_loss_weight'] * val_direction_loss
+                )
 
                 tot_val_loss_sum_rank += val_loss.item()
+                tot_val_token_loss_sum_rank += val_token_loss.item()
+                tot_val_direction_loss_sum_rank += val_direction_loss.item()
+                tot_val_direction_correct_rank += (
+                    direction_result['accuracy'].item() * batch_x.shape[0]
+                )
+                tot_val_direction_points_rank += batch_x.shape[0]
                 val_batches_processed_rank += 1
 
         # Reduce validation metrics
         val_loss_sum_tensor = torch.tensor(tot_val_loss_sum_rank, device=device)
         val_batches_tensor = torch.tensor(val_batches_processed_rank, device=device)
+        val_token_loss_tensor = torch.tensor(tot_val_token_loss_sum_rank, device=device)
+        val_direction_loss_tensor = torch.tensor(tot_val_direction_loss_sum_rank, device=device)
+        val_direction_correct_tensor = torch.tensor(tot_val_direction_correct_rank, device=device)
+        val_direction_points_tensor = torch.tensor(tot_val_direction_points_rank, device=device)
         dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
         dist.all_reduce(val_batches_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_token_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_direction_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_direction_correct_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_direction_points_tensor, op=dist.ReduceOp.SUM)
 
         avg_val_loss = val_loss_sum_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
+        avg_val_token_loss = val_token_loss_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
+        avg_val_direction_loss = val_direction_loss_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
+        avg_val_direction_accuracy = val_direction_correct_tensor.item() / val_direction_points_tensor.item() if val_direction_points_tensor.item() > 0 else 0
 
         # --- End of Epoch Summary & Checkpointing (Master Process Only) ---
         if rank == 0:
             print(f"\n--- Epoch {epoch_idx + 1}/{config['epochs']} Summary ---")
             print(f"Validation Loss: {avg_val_loss:.4f}")
+            print(
+                f"Validation Token Loss: {avg_val_token_loss:.4f}, "
+                f"Direction Loss: {avg_val_direction_loss:.4f}, "
+                f"Direction Accuracy: {avg_val_direction_accuracy:.2%}"
+            )
             print(f"Time This Epoch: {format_time(time.time() - epoch_start_time)}")
             print(f"Total Time Elapsed: {format_time(time.time() - start_time)}\n")
             if logger:
                 logger.log_metric('val_predictor_loss_epoch', avg_val_loss, epoch=epoch_idx)
+                logger.log_metric('val_token_loss_epoch', avg_val_token_loss, epoch=epoch_idx)
+                logger.log_metric('val_direction_loss_epoch', avg_val_direction_loss, epoch=epoch_idx)
+                logger.log_metric('val_direction_accuracy_epoch', avg_val_direction_accuracy, epoch=epoch_idx)
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 save_path = f"{save_dir}/checkpoints/best_model"
                 model.module.save_pretrained(save_path)
+                torch.save(
+                    {
+                        'state_dict': direction_head.module.state_dict(),
+                        'd_model': model.module.d_model,
+                        'horizon': config['direction_horizon'],
+                        'lookback_window': config['lookback_window'],
+                    },
+                    os.path.join(save_path, 'direction_head.pt'),
+                )
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
 
         dist.barrier()
 
     dt_result['best_val_loss'] = best_val_loss
+    dt_result['direction_horizon'] = config['direction_horizon']
+    dt_result['direction_loss_weight'] = config['direction_loss_weight']
     return dt_result
 
 
@@ -197,6 +300,10 @@ def main(config: dict):
             'world_size': world_size,
         }
         if config['use_comet']:
+            if comet_ml is None:
+                raise RuntimeError(
+                    "Comet logging is enabled but comet_ml is not installed"
+                )
             comet_logger = comet_ml.Experiment(
                 api_key=config['comet_config']['api_key'],
                 project_name=config['comet_config']['project_name'],
@@ -216,13 +323,27 @@ def main(config: dict):
     model = Kronos.from_pretrained(config['pretrained_predictor_path'])
     model.to(device)
     model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+    direction_head = DirectionAuxiliaryHead(model.module.d_model).to(device)
+    direction_head = DDP(
+        direction_head,
+        device_ids=[local_rank],
+        find_unused_parameters=False,
+    )
 
     if rank == 0:
         print(f"Predictor Model Size: {get_model_size(model.module)}")
 
     # Start Training
     dt_result = train_model(
-        model, tokenizer, device, config, save_dir, comet_logger, rank, world_size
+        model,
+        tokenizer,
+        direction_head,
+        device,
+        config,
+        save_dir,
+        comet_logger,
+        rank,
+        world_size,
     )
 
     if rank == 0:

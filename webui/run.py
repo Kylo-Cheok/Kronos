@@ -79,7 +79,9 @@ def main():
         webbrowser.open('http://localhost:7070')
         
         # Start Flask application
-        app.run(debug=True, host='0.0.0.0', port=7070)
+        # The debug reloader launches a second process and can leave stale
+        # listeners behind on Windows. Run one stable local instance instead.
+        app.run(debug=False, use_reloader=False, host='0.0.0.0', port=7070)
         
     except Exception as e:
         print(f"❌ Startup failed: {e}")

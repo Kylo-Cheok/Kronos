@@ -236,7 +236,16 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
         elif isinstance(module, RMSNorm):
             nn.init.ones_(module.weight)
 
-    def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None, use_teacher_forcing=False, s1_targets=None):
+    def forward(
+        self,
+        s1_ids,
+        s2_ids,
+        stamp=None,
+        padding_mask=None,
+        use_teacher_forcing=False,
+        s1_targets=None,
+        return_context=False,
+    ):
         """
         Args:
             s1_ids (torch.Tensor): Input tensor of s1 token IDs. Shape: [batch_size, seq_len]
@@ -245,6 +254,8 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
             padding_mask (torch.Tensor, optional): Mask for padding tokens. Shape: [batch_size, seq_len]. Defaults to None.
             use_teacher_forcing (bool, optional): Whether to use teacher forcing for s1 decoding. Defaults to False.
             s1_targets (torch.Tensor, optional): Target s1 token IDs for teacher forcing. Shape: [batch_size, seq_len]. Defaults to None.
+            return_context (bool, optional): Also return the causal Transformer
+                representation for auxiliary objectives. Defaults to False.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
@@ -273,6 +284,8 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
 
         x2 = self.dep_layer(x, sibling_embed, key_padding_mask=padding_mask) # Dependency Aware Layer: Condition on s1 embeddings
         s2_logits = self.head.cond_forward(x2)
+        if return_context:
+            return s1_logits, s2_logits, x
         return s1_logits, s2_logits
 
     def decode_s1(self, s1_ids, s2_ids, stamp=None, padding_mask=None):
@@ -386,7 +399,53 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_l
     return x
 
 
-def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len, clip=5, T=1.0, top_k=0, top_p=0.99, sample_count=5, verbose=False):
+def summarize_prediction_samples(samples, last_close, confidence_level=0.9):
+    """Summarize sampled forecast paths in the de-normalized feature space."""
+    samples = np.asarray(samples, dtype=np.float64)
+    if samples.ndim != 3:
+        raise ValueError("samples must have shape (sample_count, pred_len, feature_count)")
+    if samples.shape[0] < 1 or samples.shape[1] < 1 or samples.shape[2] < 4:
+        raise ValueError("samples must contain at least one path, one step, and four OHLC features")
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must be between 0 and 1")
+    if not np.isfinite(samples).all() or not np.isfinite(last_close):
+        raise ValueError("samples and last_close must contain finite values")
+
+    tail_probability = (1.0 - confidence_level) / 2.0
+    lower = np.quantile(samples, tail_probability, axis=0)
+    median = np.quantile(samples, 0.5, axis=0)
+    upper = np.quantile(samples, 1.0 - tail_probability, axis=0)
+    mean = np.mean(samples, axis=0)
+    std = np.std(samples, axis=0)
+
+    close_interval_width = upper[:, 3] - lower[:, 3]
+    close_median = median[:, 3]
+    relative_interval_width = close_interval_width / (np.abs(close_median) + 1e-8)
+    close_samples = samples[:, :, 3]
+    previous_close = np.concatenate(
+        [
+            np.full((samples.shape[0], 1), float(last_close), dtype=np.float64),
+            close_samples[:, :-1],
+        ],
+        axis=1,
+    )
+    up_probability = np.mean(close_samples > previous_close, axis=0)
+    cumulative_up_probability = np.mean(close_samples > float(last_close), axis=0)
+
+    return {
+        "mean": mean,
+        "lower": lower,
+        "median": median,
+        "upper": upper,
+        "std": std,
+        "interval_width": close_interval_width,
+        "relative_interval_width": relative_interval_width,
+        "up_probability": up_probability,
+        "cumulative_up_probability": cumulative_up_probability,
+    }
+
+
+def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len, clip=5, T=1.0, top_k=0, top_p=0.99, sample_count=5, verbose=False, return_samples=False, deterministic=False):
     with torch.no_grad():
         x = torch.clip(x, -clip, clip)
 
@@ -435,11 +494,23 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
 
             s1_logits, context = model.decode_s1(input_tokens[0], input_tokens[1], current_stamp)
             s1_logits = s1_logits[:, -1, :]
-            sample_pre = sample_from_logits(s1_logits, temperature=T, top_k=top_k, top_p=top_p, sample_logits=True)
+            sample_pre = sample_from_logits(
+                s1_logits,
+                temperature=T,
+                top_k=top_k,
+                top_p=top_p,
+                sample_logits=not deterministic,
+            )
 
             s2_logits = model.decode_s2(context, sample_pre)
             s2_logits = s2_logits[:, -1, :]
-            sample_post = sample_from_logits(s2_logits, temperature=T, top_k=top_k, top_p=top_p, sample_logits=True)
+            sample_post = sample_from_logits(
+                s2_logits,
+                temperature=T,
+                top_k=top_k,
+                top_p=top_p,
+                sample_logits=not deterministic,
+            )
 
             generated_pre[:, i] = sample_pre.squeeze(-1)
             generated_post[:, i] = sample_post.squeeze(-1)
@@ -464,6 +535,8 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
         z = tokenizer.decode(input_tokens, half=True)
         z = z.reshape(-1, sample_count, z.size(1), z.size(2))
         preds = z.cpu().numpy()
+        if return_samples:
+            return preds
         preds = np.mean(preds, axis=1)
 
         return preds
@@ -505,18 +578,23 @@ class KronosPredictor:
         self.tokenizer = self.tokenizer.to(self.device)
         self.model = self.model.to(self.device)
 
-    def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose):
+    def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose, return_samples=False, deterministic=False):
 
         x_tensor = torch.from_numpy(np.array(x).astype(np.float32)).to(self.device)
         x_stamp_tensor = torch.from_numpy(np.array(x_stamp).astype(np.float32)).to(self.device)
         y_stamp_tensor = torch.from_numpy(np.array(y_stamp).astype(np.float32)).to(self.device)
 
         preds = auto_regressive_inference(self.tokenizer, self.model, x_tensor, x_stamp_tensor, y_stamp_tensor, self.max_context, pred_len,
-                                          self.clip, T, top_k, top_p, sample_count, verbose)
-        preds = preds[:, -pred_len:, :]
+                                          self.clip, T, top_k, top_p, sample_count, verbose,
+                                          return_samples=return_samples,
+                                          deterministic=deterministic)
+        if return_samples:
+            preds = preds[:, :, -pred_len:, :]
+        else:
+            preds = preds[:, -pred_len:, :]
         return preds
 
-    def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_k=0, top_p=0.9, sample_count=1, verbose=True):
+    def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_k=0, top_p=0.9, sample_count=1, verbose=True, return_distribution=False, confidence_level=0.9, deterministic=False):
 
         if not isinstance(df, pd.DataFrame):
             raise ValueError("Input must be a pandas DataFrame.")
@@ -550,12 +628,52 @@ class KronosPredictor:
         x_stamp = x_stamp[np.newaxis, :]
         y_stamp = y_stamp[np.newaxis, :]
 
-        preds = self.generate(x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose)
+        preds = self.generate(
+            x,
+            x_stamp,
+            y_stamp,
+            pred_len,
+            T,
+            top_k,
+            top_p,
+            sample_count,
+            verbose,
+            return_samples=return_distribution,
+            deterministic=deterministic,
+        )
+
+        columns = self.price_cols + [self.vol_col, self.amt_vol]
+        if return_distribution:
+            sample_preds = preds[0]
+            sample_preds = sample_preds * (x_std + 1e-5) + x_mean
+            summary = summarize_prediction_samples(
+                sample_preds,
+                last_close=float(df[self.price_cols].iloc[-1]["close"]),
+                confidence_level=confidence_level,
+            )
+
+            def to_frame(values):
+                return pd.DataFrame(values, columns=columns, index=y_timestamp)
+
+            mean_df = to_frame(summary["mean"])
+            return {
+                "prediction": mean_df,
+                "mean": mean_df,
+                "lower": to_frame(summary["lower"]),
+                "median": to_frame(summary["median"]),
+                "upper": to_frame(summary["upper"]),
+                "std": to_frame(summary["std"]),
+                "samples": sample_preds,
+                "up_probability": summary["up_probability"],
+                "cumulative_up_probability": summary["cumulative_up_probability"],
+                "interval_width": summary["interval_width"],
+                "relative_interval_width": summary["relative_interval_width"],
+            }
 
         preds = preds.squeeze(0)
         preds = preds * (x_std + 1e-5) + x_mean
 
-        pred_df = pd.DataFrame(preds, columns=self.price_cols + [self.vol_col, self.amt_vol], index=y_timestamp)
+        pred_df = pd.DataFrame(preds, columns=columns, index=y_timestamp)
         return pred_df
 
 

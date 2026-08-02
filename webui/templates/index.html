@@ -501,6 +501,7 @@
                     <p><strong>Columns:</strong> <span id="data-cols">-</span></p>
                     <p><strong>Time Range:</strong> <span id="data-time-range">-</span></p>
                     <p><strong>Price Range:</strong> <span id="data-price-range">-</span></p>
+                    <p><strong>Corporate-action adjustment:</strong> <span id="data-adjustment-info">-</span></p>
                     <p><strong>Time Frequency:</strong> <span id="data-timeframe">-</span></p>
                     <p><strong>Prediction Columns:</strong> <span id="data-prediction-cols">-</span></p>
                 </div>
@@ -533,6 +534,15 @@
 
                 <!-- Prediction Parameters -->
                 <div class="form-group">
+                    <label for="prediction-mode">Prediction Mode:</label>
+                    <select id="prediction-mode">
+                        <option value="backtest" selected>Historical walk-forward backtest</option>
+                        <option value="future">Latest data → future forecast</option>
+                    </select>
+                    <small class="form-text">Future mode uses the latest 400 observed rows and never reads future actual data. The verified direction head only supports a 1-day low-confidence candidate.</small>
+                </div>
+
+                <div class="form-group">
                     <label for="lookback">Lookback Window Size:</label>
                     <input type="number" id="lookback" value="400" readonly>
                     <small class="form-text">Fixed at 400 data points</small>
@@ -542,6 +552,12 @@
                     <label for="pred-len">Prediction Length:</label>
                     <input type="number" id="pred-len" value="120" readonly>
                     <small class="form-text">Fixed at 120 data points</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="rolling-horizon">Rolling Forecast Horizon:</label>
+                    <input type="number" id="rolling-horizon" value="10" min="0" max="120" step="5">
+                    <small class="form-text">Backtest in short chunks and refresh the context with observed data after each chunk; set 0 for one-shot prediction</small>
                 </div>
 
                 <!-- Prediction Quality Parameters -->
@@ -561,13 +577,24 @@
 
                 <div class="form-group">
                     <label for="sample-count">Sample Count:</label>
-                    <input type="number" id="sample-count" value="1" min="1" max="5" step="1">
-                    <small class="form-text">Generate multiple prediction samples to improve quality (recommended 1-3)</small>
+                    <input type="number" id="sample-count" value="16" min="1" max="64" step="1">
+                    <small class="form-text">Generate multiple paths so the UI can estimate intervals and upward probability (recommended 16)</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="confidence-level">Prediction Interval Confidence:</label>
+                    <input type="range" id="confidence-level" value="0.90" min="0.50" max="0.99" step="0.01">
+                    <span id="confidence-level-value">90%</span>
+                    <small id="confidence-help" class="form-text">Intervals use walk-forward historical return quantiles; sampled model paths remain uncalibrated.</small>
                 </div>
 
                 <button id="predict-btn" class="btn btn-success" disabled>
                     🔮 Start Prediction
                 </button>
+                <button id="ab-diagnostic-btn" class="btn btn-warning" disabled>
+                    🧪 Run A/B Diagnostic
+                </button>
+                <small class="form-text">Compares current sampling, conservative sampling, and deterministic greedy decoding on the same backtest window.</small>
 
                 <!-- Loading Status -->
                 <div id="loading" class="loading">
@@ -580,11 +607,82 @@
                 <h2>📈 Prediction Results Chart</h2>
                 <div id="chart"></div>
                 
-                <!-- Comparison Analysis -->
+                <!-- Forecast Uncertainty -->
+                <div id="confidence-section" class="comparison-section" style="display: none;">
+                    <h3>🔬 Forecast Uncertainty</h3>
+                    <p class="form-text">These are empirical statistics across sampled paths, not calibrated probabilities of correctness.</p>
+                    <div class="error-stats">
+                        <div class="error-stat">
+                            <h4>Sample Paths</h4>
+                            <div class="value" id="confidence-sample-count">-</div>
+                            <div class="unit">paths</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Mean P(Up)</h4>
+                            <div class="value" id="mean-up-probability">-</div>
+                            <div class="unit">next close above last close</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Mean Relative Interval</h4>
+                            <div class="value" id="mean-relative-interval">-</div>
+                            <div class="unit" id="mean-relative-interval-label">P05–P95 / median close</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Mean Close Interval</h4>
+                            <div class="value" id="mean-interval-width">-</div>
+                            <div class="unit" id="mean-interval-label">price units, P05–P95</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="direction-section" class="comparison-section" style="display: none;">
+                    <h3>🧭 Short-cycle Direction</h3>
+                    <p id="direction-policy-note" class="form-text"></p>
+                    <div class="error-stats">
+                        <div class="error-stat">
+                            <h4 id="direction-signal-heading">Latest direction signal</h4>
+                            <div class="value" id="direction-latest">-</div>
+                            <div class="unit" id="direction-status">uncalibrated</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Raw model P(Up)</h4>
+                            <div class="value" id="direction-raw-probability">-</div>
+                            <div class="unit" id="direction-score-note">uncalibrated model score, not correctness probability</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Backtest model accuracy</h4>
+                            <div class="value" id="direction-model-accuracy">-</div>
+                            <div class="unit" id="direction-model-interval">10-step cumulative direction</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Candidate filter</h4>
+                            <div class="value" id="direction-candidate-accuracy">-</div>
+                            <div class="unit" id="direction-candidate-coverage">no held-out calibration</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="ab-section" class="comparison-section" style="display: none;">
+                    <h3>🧪 Sampling A/B Diagnostic</h3>
+                    <p id="ab-meta" class="form-text"></p>
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Case</th>
+                                <th>MAE</th>
+                                <th>MAPE</th>
+                                <th>Close Jumps &gt;20%</th>
+                                <th>Max Jump</th>
+                                <th>OHLC Violations</th>
+                                <th>Horizon MAE (1/5/10/20)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ab-tbody"></tbody>
+                    </table>
+                </div>
                 <div id="comparison-section" class="comparison-section" style="display: none;">
                     <h3>📊 Prediction vs Actual Data Comparison</h3>
                     <div id="comparison-info" class="comparison-info">
                         <p><strong>Prediction Type:</strong> <span id="prediction-type">-</span></p>
+                        <p><strong>Forecast Mode:</strong> <span id="forecast-mode">-</span></p>
                         <p><strong>Comparison Data:</strong> <span id="comparison-data">-</span></p>
                     </div>
                     
@@ -621,6 +719,9 @@
                                         <th>Predicted Low</th>
                                         <th>Actual Close</th>
                                         <th>Predicted Close</th>
+                                        <th>P(Up)</th>
+                                        <th id="prediction-interval-header">Close P05–P95</th>
+                                        <th>Uncertainty</th>
                                     </tr>
                                 </thead>
                                 <tbody id="comparison-tbody">
@@ -719,6 +820,8 @@
                     showStatus('success', response.data.message);
                     updateModelStatus();
                     document.getElementById('predict-btn').disabled = false;
+                    document.getElementById('ab-diagnostic-btn').disabled =
+                        !currentDataFile || document.getElementById('prediction-mode').value !== 'backtest';
                     console.log('✅ Model loaded successfully:', response.data.model_info);
                 } else {
                     showStatus('error', response.data.error);
@@ -799,6 +902,8 @@
                     // Update prediction button status
                     if (modelLoaded) {
                         document.getElementById('predict-btn').disabled = false;
+                        document.getElementById('ab-diagnostic-btn').disabled =
+                            document.getElementById('prediction-mode').value !== 'backtest';
                     }
                     
                     console.log('✅ Data loaded successfully:', response.data.data_info);
@@ -821,6 +926,13 @@
             document.getElementById('data-cols').textContent = dataInfo.columns.length;
             document.getElementById('data-time-range').textContent = `${dataInfo.start_date} to ${dataInfo.end_date}`;
             document.getElementById('data-price-range').textContent = `${dataInfo.price_range.min.toFixed(4)} - ${dataInfo.price_range.max.toFixed(4)}`;
+            const adjustment = dataInfo.corporate_action_adjustment || { event_count: 0, events: [] };
+            const adjustmentDates = (adjustment.events || [])
+                .map((event) => event.timestamp ? event.timestamp.split('T')[0] : `row ${event.row_index}`)
+                .join(', ');
+            document.getElementById('data-adjustment-info').textContent = adjustment.event_count > 0
+                ? `${adjustment.event_count} likely split/bonus-share gaps back-adjusted (${adjustmentDates})`
+                : 'No likely split/bonus-share gap detected';
             document.getElementById('data-timeframe').textContent = dataInfo.timeframe;
             document.getElementById('data-prediction-cols').textContent = dataInfo.prediction_columns.join(', ');
             
@@ -1043,37 +1155,46 @@
             try {
                 showLoading(true);
                 document.getElementById('predict-btn').disabled = true;
+                document.getElementById('ab-diagnostic-btn').disabled = true;
                 
                 const lookback = parseInt(document.getElementById('lookback').value);
                 const predLen = parseInt(document.getElementById('pred-len').value);
+                const predictionMode = document.getElementById('prediction-mode').value;
                 
                 // Get selected time range from time window slider
-                const startHandle = document.getElementById('start-handle');
-                const startPercentage = parseFloat(startHandle.style.left) / 100;
-                
-                if (!sliderData) {
+                if (predictionMode === 'backtest' && !sliderData) {
                     showStatus('error', 'Time window slider not initialized');
                     return;
                 }
-                
-                // Calculate selected time range
-                const totalTime = sliderData.endDate.getTime() - sliderData.startDate.getTime();
-                const startTime = sliderData.startDate.getTime() + (totalTime * startPercentage);
-                const startDate = new Date(startTime);
+                let startDate = null;
+                if (predictionMode === 'backtest') {
+                    const startHandle = document.getElementById('start-handle');
+                    const startPercentage = parseFloat(startHandle.style.left) / 100;
+                    const totalTime = sliderData.endDate.getTime() - sliderData.startDate.getTime();
+                    const startTime = sliderData.startDate.getTime() + (totalTime * startPercentage);
+                    startDate = new Date(startTime);
+                }
                 
                 // Get prediction quality parameters
                 const temperature = parseFloat(document.getElementById('temperature').value);
                 const topP = parseFloat(document.getElementById('top-p').value);
                 const sampleCount = parseInt(document.getElementById('sample-count').value);
+                const confidenceLevel = parseFloat(document.getElementById('confidence-level').value);
+                const rollingHorizon = predictionMode === 'backtest'
+                    ? parseInt(document.getElementById('rolling-horizon').value)
+                    : 0;
                 
                 let predictionParams = {
                     file_path: currentDataFile,
                     lookback: lookback,
                     pred_len: predLen,
-                    start_date: startDate.toISOString().slice(0, 16), // Format as YYYY-MM-DDTHH:MM
+                    start_date: startDate ? startDate.toISOString().slice(0, 16) : undefined,
                     temperature: temperature,
                     top_p: topP,
-                    sample_count: sampleCount
+                    sample_count: sampleCount,
+                    confidence_level: confidenceLevel,
+                    rolling_horizon: rollingHorizon,
+                    mode: predictionMode
                 };
                 
                 console.log('🚀 Starting prediction, parameters:', predictionParams);
@@ -1093,6 +1214,66 @@
             } finally {
                 showLoading(false);
                 document.getElementById('predict-btn').disabled = false;
+                document.getElementById('ab-diagnostic-btn').disabled =
+                    !modelLoaded || !currentDataFile ||
+                    document.getElementById('prediction-mode').value !== 'backtest';
+            }
+        }
+
+        // Run a reproducible sampling A/B comparison on the selected backtest window
+        async function runAbDiagnostic() {
+            if (!currentDataFile || !modelLoaded) {
+                showStatus('error', 'Please load both model and data first');
+                return;
+            }
+            if (document.getElementById('prediction-mode').value !== 'backtest') {
+                showStatus('error', 'A/B diagnostics require historical backtest mode');
+                return;
+            }
+            if (!sliderData) {
+                showStatus('error', 'Time window slider not initialized');
+                return;
+            }
+
+            try {
+                showLoading(true);
+                document.getElementById('predict-btn').disabled = true;
+                document.getElementById('ab-diagnostic-btn').disabled = true;
+
+                const startHandle = document.getElementById('start-handle');
+                const startPercentage = parseFloat(startHandle.style.left) / 100;
+                const totalTime = sliderData.endDate.getTime() - sliderData.startDate.getTime();
+                const startTime = sliderData.startDate.getTime() + (totalTime * startPercentage);
+                const startDate = new Date(startTime);
+
+                const params = {
+                    file_path: currentDataFile,
+                    lookback: parseInt(document.getElementById('lookback').value),
+                    pred_len: parseInt(document.getElementById('pred-len').value),
+                    start_date: startDate.toISOString().slice(0, 16),
+                    temperature: parseFloat(document.getElementById('temperature').value),
+                    top_p: parseFloat(document.getElementById('top-p').value),
+                    sample_count: parseInt(document.getElementById('sample-count').value),
+                    confidence_level: parseFloat(document.getElementById('confidence-level').value),
+                    rolling_horizon: parseInt(document.getElementById('rolling-horizon').value),
+                    mode: 'backtest',
+                    seed: 20260802
+                };
+
+                const response = await axios.post('/api/diagnostics/ab', params);
+                if (response.data.success) {
+                    displayAbDiagnostics(response.data);
+                    showStatus('success', response.data.message);
+                } else {
+                    showStatus('error', response.data.error);
+                }
+            } catch (error) {
+                console.error('❌ A/B diagnostic failed:', error);
+                showStatus('error', `A/B diagnostic failed: ${error.response?.data?.error || error.message}`);
+            } finally {
+                showLoading(false);
+                document.getElementById('predict-btn').disabled = !modelLoaded || !currentDataFile;
+                document.getElementById('ab-diagnostic-btn').disabled = !modelLoaded || !currentDataFile;
             }
         }
 
@@ -1101,6 +1282,8 @@
             // Display chart
             const chartData = JSON.parse(result.chart);
             Plotly.newPlot('chart', chartData.data, chartData.layout);
+            displayConfidenceAnalysis(result);
+            displayDirectionAnalysis(result);
             
             // Display comparison analysis (if actual data exists)
             if (result.has_comparison) {
@@ -1110,12 +1293,156 @@
             }
         }
 
-        // Display comparison analysis
+        // Display empirical uncertainty statistics
+        function displayConfidenceAnalysis(result) {
+            const section = document.getElementById('confidence-section');
+            const summary = result.confidence_summary;
+            if (!summary) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            document.getElementById('confidence-sample-count').textContent = summary.sample_count;
+            document.getElementById('mean-up-probability').textContent = `${(summary.mean_up_probability * 100).toFixed(1)}%`;
+            document.getElementById('mean-relative-interval').textContent = `${(summary.mean_relative_interval_width * 100).toFixed(2)}%`;
+            document.getElementById('mean-interval-width').textContent = summary.mean_interval_width.toFixed(4);
+            const tailProbability = (1 - summary.confidence_level) / 2;
+            const lowerPercent = Math.round(tailProbability * 100);
+            const upperPercent = Math.round((1 - tailProbability) * 100);
+            const intervalLabel = `P${String(lowerPercent).padStart(2, '0')}–P${upperPercent}`;
+            const isReturnCalibrated = summary.interval_method === 'historical_log_return_quantiles';
+            if (isReturnCalibrated) {
+                document.getElementById('confidence-help').textContent =
+                    `${(summary.confidence_level * 100).toFixed(0)}% walk-forward historical-return interval; ${summary.guardrail_count || 0} model points were outside the band and explicitly constrained.`;
+                document.getElementById('mean-relative-interval-label').textContent = 'historical return band / guarded median close';
+                document.getElementById('mean-interval-label').textContent = 'price units, calibrated historical band';
+                document.getElementById('prediction-interval-header').textContent = 'Calibrated close band';
+            } else {
+                document.getElementById('confidence-help').textContent =
+                    `${(summary.confidence_level * 100).toFixed(0)}% empirical interval (${intervalLabel} of sampled paths); it is not statistically calibrated.`;
+                document.getElementById('mean-relative-interval-label').textContent = `${intervalLabel} / median close`;
+                document.getElementById('mean-interval-label').textContent = `price units, ${intervalLabel}`;
+                document.getElementById('prediction-interval-header').textContent = `Close ${intervalLabel}`;
+            }
+        }
+
+        function displayDirectionAnalysis(result) {
+            const section = document.getElementById('direction-section');
+            const summary = result.direction_summary;
+            if (!summary || !summary.signals || summary.signals.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            const signal = summary.verified_signal || summary.signals[summary.signals.length - 1];
+            const isVerified = Boolean(summary.verified_signal);
+            document.getElementById('direction-signal-heading').textContent =
+                `Latest ${signal.horizon || 1}-day signal`;
+            const candidate = signal.candidate_direction || signal.direction;
+            document.getElementById('direction-latest').textContent = candidate
+                ? candidate.toUpperCase()
+                : 'ABSTAIN';
+            document.getElementById('direction-status').textContent =
+                signal.status === 'actionable'
+                    ? 'actionable after held-out calibration'
+                    : (signal.status === 'candidate'
+                        ? (signal.confidence_label === 'low'
+                            ? 'validated 1-day edge — LOW confidence, research only'
+                            : 'candidate only — not actionable')
+                        : signal.reason.replaceAll('_', ' '));
+            document.getElementById('direction-raw-probability').textContent =
+                signal.raw_model_up_probability == null
+                    ? '-'
+                    : `${(signal.raw_model_up_probability * 100).toFixed(1)}% (not calibrated)`;
+            document.getElementById('direction-policy-note').textContent =
+                `${summary.policy_description} The model score is explicitly not a probability of correctness.`;
+
+            if (isVerified && signal.historical_accuracy != null) {
+                const interval = signal.historical_wilson_95 || [null, null];
+                document.getElementById('direction-model-accuracy').textContent =
+                    `${(signal.historical_accuracy * 100).toFixed(1)}%`;
+                document.getElementById('direction-model-interval').textContent =
+                    `${signal.historical_points} strict walk-forward 1-day samples, Wilson 95% ` +
+                    `${(interval[0] * 100).toFixed(1)}–${(interval[1] * 100).toFixed(1)}%`;
+                document.getElementById('direction-candidate-accuracy').textContent = '-';
+                document.getElementById('direction-candidate-coverage').textContent =
+                    '3/5/10-day direction failed validation and is forced to abstain';
+                return;
+            }
+
+            const evaluation = summary.evaluation;
+            if (!evaluation) {
+                document.getElementById('direction-model-accuracy').textContent = '-';
+                document.getElementById('direction-model-interval').textContent =
+                    'run a historical backtest to measure accuracy';
+                document.getElementById('direction-candidate-accuracy').textContent = '-';
+                document.getElementById('direction-candidate-coverage').textContent =
+                    'no held-out calibration';
+                return;
+            }
+
+            const model = evaluation.model || {};
+            const modelInterval = model.wilson_95 || [null, null];
+            document.getElementById('direction-model-accuracy').textContent =
+                model.accuracy == null ? '-' : `${(model.accuracy * 100).toFixed(1)}%`;
+            document.getElementById('direction-model-interval').textContent =
+                modelInterval[0] == null
+                    ? `${model.points || 0} chunks`
+                    : `${model.points} chunks, Wilson 95% ${(modelInterval[0] * 100).toFixed(1)}–${(modelInterval[1] * 100).toFixed(1)}%`;
+
+            const filtered = evaluation.candidate || {};
+            document.getElementById('direction-candidate-accuracy').textContent =
+                filtered.accuracy == null ? '-' : `${(filtered.accuracy * 100).toFixed(1)}%`;
+            document.getElementById('direction-candidate-coverage').textContent =
+                `${filtered.points || 0} chunks, ${((filtered.coverage || 0) * 100).toFixed(1)}% coverage; still not actionable`;
+        }
+
+        function displayAbDiagnostics(result) {
+            const section = document.getElementById('ab-section');
+            const tbody = document.getElementById('ab-tbody');
+            section.style.display = 'block';
+            document.getElementById('ab-meta').textContent =
+                `Same ${result.mode} window, rolling horizon ${result.rolling_horizon}, seed ${result.seed}. ` +
+                `Lower jumps and zero OHLC violations are better.`;
+            tbody.innerHTML = '';
+
+            result.cases.forEach((item) => {
+                const diagnostics = item.diagnostics;
+                const metrics = diagnostics.metrics || {};
+                const byHorizon = diagnostics.metrics_by_horizon || {};
+                const horizonValues = [1, 5, 10, 20].map((h) => {
+                    const value = byHorizon[String(h)]?.mae;
+                    return value == null ? '-' : value.toFixed(1);
+                }).join(' / ');
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${item.label}</td>
+                    <td>${metrics.mae == null ? '-' : metrics.mae.toFixed(2)}</td>
+                    <td>${metrics.mape == null ? '-' : metrics.mape.toFixed(2) + '%'}</td>
+                    <td>${diagnostics.close_jumps_gt_20pct.count}</td>
+                    <td>${diagnostics.close_jumps_gt_20pct.max_abs_pct.toFixed(2)}%</td>
+                    <td>${diagnostics.ohlc_violations.total}</td>
+                    <td>${horizonValues}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
         function displayComparisonAnalysis(result) {
             document.getElementById('comparison-section').style.display = 'block';
             
             // Update comparison information
             document.getElementById('prediction-type').textContent = result.prediction_type;
+            const rollingHorizon = result.confidence_summary?.rolling_horizon || 0;
+            const rollingChunks = result.confidence_summary?.rolling_chunks || 1;
+            const forecastMode = result.confidence_summary?.mode || 'future';
+            document.getElementById('forecast-mode').textContent = forecastMode === 'backtest'
+                ? (rollingHorizon > 0
+                    ? `Historical walk-forward rolling (${rollingHorizon} points × ${rollingChunks} chunks)`
+                    : 'Historical one-shot backtest')
+                : 'Future forecast (no observed targets used)';
             document.getElementById('comparison-data').textContent = `${result.actual_data.length} actual data points`;
             
             // Calculate error statistics
@@ -1181,6 +1508,9 @@
                     <td>${pred.low.toFixed(4)}</td>
                     <td>${act.close.toFixed(4)}</td>
                     <td>${pred.close.toFixed(4)}</td>
+                    <td>${(pred.up_probability * 100).toFixed(1)}%</td>
+                    <td>${pred.close_lower.toFixed(4)} – ${pred.close_upper.toFixed(4)}</td>
+                    <td>${pred.uncertainty_level}</td>
                 `;
                 tbody.appendChild(row);
             }
@@ -1196,6 +1526,8 @@
             
             // Prediction button
             document.getElementById('predict-btn').addEventListener('click', startPrediction);
+            document.getElementById('ab-diagnostic-btn').addEventListener('click', runAbDiagnostic);
+            document.getElementById('prediction-mode').addEventListener('change', updatePredictionMode);
             
             // Prediction quality parameter sliders
             document.getElementById('temperature').addEventListener('input', function() {
@@ -1206,9 +1538,34 @@
                 document.getElementById('top-p-value').textContent = this.value;
             });
             
+            document.getElementById('confidence-level').addEventListener('input', function() {
+                document.getElementById('confidence-level-value').textContent = `${(parseFloat(this.value) * 100).toFixed(0)}%`;
+            });
+
             // Update slider when lookback window size changes
             document.getElementById('lookback').addEventListener('input', updateSliderFromInputs);
             document.getElementById('pred-len').addEventListener('input', updateSliderFromInputs);
+            updatePredictionMode();
+        }
+
+        function updatePredictionMode() {
+            const mode = document.getElementById('prediction-mode').value;
+            const rolling = document.getElementById('rolling-horizon');
+            const timeWindow = document.querySelector('.time-window-container');
+            if (mode === 'future') {
+                if (!rolling.disabled) {
+                    rolling.dataset.backtestValue = rolling.value;
+                }
+                rolling.value = '0';
+                rolling.disabled = true;
+                timeWindow.style.opacity = '0.45';
+                document.getElementById('ab-diagnostic-btn').disabled = true;
+            } else {
+                rolling.disabled = false;
+                rolling.value = rolling.dataset.backtestValue || '10';
+                timeWindow.style.opacity = '1';
+                document.getElementById('ab-diagnostic-btn').disabled = !modelLoaded || !currentDataFile;
+            }
         }
 
         // Display status information

@@ -384,13 +384,16 @@ class MultiHeadCrossAttentionWithRoPE(nn.Module):
         else:
             attn_mask = None
 
-        is_causal_flag = self.training
-
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=attn_mask,
             dropout_p=self.attn_dropout_p if self.training else 0.0,
-            is_causal=is_causal_flag
+            # Full-sequence training and validation must be causal. During
+            # autoregressive inference q_len is one while every key is already
+            # observed context, so that single query may attend to all keys.
+            # Conditioning on ``self.training`` leaked future positions into
+            # validation; conditioning on sequence shape preserves both modes.
+            is_causal=(q_len == seq_len)
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, q_len, self.d_model)

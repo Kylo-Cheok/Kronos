@@ -54,6 +54,14 @@ Desktop.ini
 *.pt
 *.ckpt
 *.bin
+weights/Kronos-base/
+weights/Kronos-Tokenizer-base/
+
+# Generated experiment and Web UI artifacts
+outputs/
+webui/prediction_results/
+data/688169_prediction.*
+.claude/
 
 # Logs
 *.log

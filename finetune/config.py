@@ -57,6 +57,11 @@ class Config:
         # Learning rates for different model components.
         self.tokenizer_learning_rate = 2e-4
         self.predictor_learning_rate = 4e-5
+        # Auxiliary objective for absolute close direction at predict_window.
+        # This complements token reconstruction; it does not make the output
+        # probability calibrated by itself.
+        self.direction_loss_weight = 0.5
+        self.direction_horizon = self.predict_window
 
         # Gradient accumulation to simulate a larger batch size.
         self.accumulation_steps = 1
@@ -72,7 +77,7 @@ class Config:
         # =================================================================
         # Experiment Logging & Saving
         # =================================================================
-        self.use_comet = True # Set to False if you don't want to use Comet ML
+        self.use_comet = False # Set to True only after configuring Comet ML
         self.comet_config = {
             # It is highly recommended to load secrets from environment variables
             # for security purposes. Example: os.getenv("COMET_API_KEY")
