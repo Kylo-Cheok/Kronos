@@ -12,7 +12,10 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import comet_ml
+try:
+    import comet_ml
+except ImportError:
+    comet_ml = None
 
 # Ensure project root is in path
 sys.path.append("../")
@@ -187,8 +190,9 @@ def train_model(model, device, config, save_dir, logger, rank, world_size):
         # Reduce validation losses from all processes
         val_loss_sum_tensor = torch.tensor(tot_val_loss_sum_rank, device=device)
         val_count_tensor = torch.tensor(val_sample_count_rank, device=device)
-        dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_count_tensor, op=dist.ReduceOp.SUM)
+        if dist.is_initialized():
+            dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(val_count_tensor, op=dist.ReduceOp.SUM)
 
         avg_val_loss = val_loss_sum_tensor.item() / val_count_tensor.item() if val_count_tensor.item() > 0 else 0
 
@@ -204,12 +208,13 @@ def train_model(model, device, config, save_dir, logger, rank, world_size):
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 save_path = f"{save_dir}/checkpoints/best_model"
-                model.module.save_pretrained(save_path)
+                (model.module if hasattr(model, "module") else model).save_pretrained(save_path)
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
                 if logger:
                     logger.log_model("best_model", save_path)
 
-        dist.barrier()  # Ensure all processes finish the epoch before starting the next one.
+        if dist.is_initialized():
+            dist.barrier()  # Ensure all processes finish the epoch before starting the next one.
 
     dt_result['best_val_loss'] = best_val_loss
     return model, dt_result
@@ -235,6 +240,10 @@ def main(config: dict):
             'world_size': world_size,
         }
         if config['use_comet']:
+            if comet_ml is None:
+                raise RuntimeError(
+                    "Comet logging is enabled but comet_ml is not installed"
+                )
             comet_logger = comet_ml.Experiment(
                 api_key=config['comet_config']['api_key'],
                 project_name=config['comet_config']['project_name'],
@@ -245,15 +254,17 @@ def main(config: dict):
             comet_logger.log_parameters(config)
             print("Comet Logger Initialized.")
 
-    dist.barrier()  # Ensure save directory is created before proceeding
+    if dist.is_initialized():
+        dist.barrier()  # Ensure save directory is created before proceeding
 
     # Model Initialization
     model = KronosTokenizer.from_pretrained(config['pretrained_tokenizer_path'])
     model.to(device)
-    model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+    if dist.is_initialized():
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
 
     if rank == 0:
-        print(f"Model Size: {get_model_size(model.module)}")
+        print(f"Model Size: {get_model_size(model.module if hasattr(model, 'module') else model)}")
 
     # Start Training
     _, dt_result = train_model(
@@ -274,7 +285,7 @@ def main(config: dict):
 
 if __name__ == '__main__':
     # Usage: torchrun --standalone --nproc_per_node=NUM_GPUS train_tokenizer.py
-    if "WORLD_SIZE" not in os.environ:
+    if "WORLD_SIZE" not in os.environ and os.environ.get("KRONOS_SINGLE_PROCESS") != "1":
         raise RuntimeError("This script must be launched with `torchrun`.")
 
     config_instance = Config()

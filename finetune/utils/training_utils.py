@@ -20,6 +20,11 @@ def setup_ddp():
     if not dist.is_available():
         raise RuntimeError("torch.distributed is not available.")
 
+    if os.environ.get("KRONOS_SINGLE_PROCESS", "0") == "1":
+        # Windows single-GPU runs do not need a rendezvous process group. This
+        # also avoids torchrun's TCPStore/libuv requirement on CPU-only builds.
+        return 0, 1, 0
+
     dist.init_process_group(backend="nccl")
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])

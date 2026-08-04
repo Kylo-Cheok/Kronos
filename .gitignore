@@ -82,3 +82,7 @@ venv.bak/
 temp/
 tmp/
 .python-version
+
+data/
+.Codex/
+examples/

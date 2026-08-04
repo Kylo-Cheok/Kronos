@@ -1,5 +1,7 @@
+import json
 import pickle
 import random
+from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -43,7 +45,26 @@ class QlibDataset(Dataset):
 
         self.window = self.config.lookback_window + self.config.predict_window + 1
 
+        manifest_path = Path(self.config.dataset_path) / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(
+                f"Missing dataset manifest: {manifest_path}. "
+                "Run data/build_local_finetune_dataset.py first."
+            )
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest_window = (manifest.get("lookback_window"), manifest.get("predict_window"))
+        expected_window = (self.config.lookback_window, self.config.predict_window)
+        if manifest_window != expected_window or manifest.get("window") != self.window:
+            raise ValueError(
+                "Dataset contract mismatch: "
+                f"manifest={manifest_window}, window={manifest.get('window')}; "
+                f"config={expected_window}, window={self.window}"
+            )
+
         self.symbols = list(self.data.keys())
+        if set(self.symbols) != set(manifest.get("symbols", [])):
+            raise ValueError("Dataset symbols do not match manifest.json")
         self.feature_list = self.config.feature_list
         self.time_feature_list = self.config.time_feature_list
 
@@ -89,7 +110,7 @@ class QlibDataset(Dataset):
         """Returns the number of samples per epoch."""
         return self.n_samples
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         
         # Select a random sample from the entire pool of indices.
         random_idx = self.py_rng.randint(0, len(self.indices) - 1)
@@ -99,6 +120,11 @@ class QlibDataset(Dataset):
         df = self.data[symbol]
         end_idx = start_idx + self.window
         win_df = df.iloc[start_idx:end_idx]
+
+        # Keep raw closes as a supervision-only side channel.  The predictor
+        # continues to receive the normalized feature matrix below; calculating
+        # log returns from normalized closes would be mathematically invalid.
+        raw_close = win_df['close'].values.astype(np.float32)
 
         # Separate main features and time features.
         x = win_df[self.feature_list].values.astype(np.float32)
@@ -119,8 +145,9 @@ class QlibDataset(Dataset):
         # Convert to PyTorch tensors.
         x_tensor = torch.from_numpy(x)
         x_stamp_tensor = torch.from_numpy(x_stamp)
+        raw_close_tensor = torch.from_numpy(raw_close)
 
-        return x_tensor, x_stamp_tensor
+        return x_tensor, x_stamp_tensor, raw_close_tensor
 
 
 if __name__ == '__main__':
@@ -131,8 +158,9 @@ if __name__ == '__main__':
     print(f"Dataset length: {len(train_dataset)}")
 
     if len(train_dataset) > 0:
-        try_x, try_x_stamp = train_dataset[100]  # Index 100 is ignored.
+        try_x, try_x_stamp, try_raw_close = train_dataset[100]  # Index is ignored.
         print(f"Sample feature shape: {try_x.shape}")
         print(f"Sample time feature shape: {try_x_stamp.shape}")
+        print(f"Raw close supervision shape: {try_raw_close.shape}")
     else:
         print("Dataset is empty.")

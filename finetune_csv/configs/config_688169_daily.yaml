@@ -1,0 +1,54 @@
+# Kronos fine-tuning configuration for 688169 daily K-line data.
+# This experiment uses the local pretrained weights as initialization.
+
+data:
+  data_path: "D:/workspace/Kronos/data/688169_train.csv"
+  # The dataset has 1565 daily rows, so a shorter window keeps validation usable.
+  lookback_window: 128
+  predict_window: 10
+  max_context: 512
+  clip: 5.0
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+
+training:
+  tokenizer_epochs: 10
+  basemodel_epochs: 10
+  batch_size: 8
+  log_interval: 25
+  num_workers: 0
+  seed: 688169
+
+  tokenizer_learning_rate: 0.0002
+  # Conservative learning rate for fine-tuning a 102M-parameter predictor
+  # on a single-symbol daily dataset.
+  predictor_learning_rate: 0.000001
+
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+  accumulation_steps: 1
+
+model_paths:
+  pretrained_tokenizer: "D:/workspace/Kronos/weights/Kronos-Tokenizer-base"
+  pretrained_predictor: "D:/workspace/Kronos/weights/Kronos-base"
+
+  exp_name: "688169_daily_finetune"
+  base_path: "D:/workspace/Kronos/outputs/finetuned"
+  base_save_path: ""
+  finetuned_tokenizer: ""
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "kronos_688169_daily_finetune"
+  description: "Fine-tuning Kronos-base on 688169 daily K-line data"
+  use_comet: false
+  train_tokenizer: true
+  train_basemodel: true
+  skip_existing: false
+
+device:
+  use_cuda: true
+  device_id: 0
