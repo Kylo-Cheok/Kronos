@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-08-02T15:36:37.988153",
+  "file_path": "D:\\workspace\\Kronos\\data\\688169_daily.csv",
+  "prediction_type": "Kronos future forecast from latest 400 observed data points",
+  "prediction_params": {
+    "lookback": 400,
+    "pred_len": 2,
+    "temperature": 1.0,
+    "top_p": 0.9,
+    "sample_count": 1,
+    "confidence_level": 0.9,
+    "rolling_horizon": 0,
+    "rolling_chunks": 1,
+    "mode": "future",
+    "uses_observed_targets": false,
+    "start_date": "latest"
+  },
+  "input_data_summary": {
+    "rows": 400,
+    "columns": [
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ],
+    "price_range": {
+      "open": {
+        "min": 91.01,
+        "max": 268.93
+      },
+      "high": {
+        "min": 94.65,
+        "max": 272.42
+      },
+      "low": {
+        "min": 89.53,
+        "max": 259.73
+      },
+      "close": {
+        "min": 91.59,
+        "max": 269.39
+      }
+    },
+    "last_values": {
+      "open": 110.5,
+      "high": 111.58,
+      "low": 108.22,
+      "close": 111.31
+    }
+  },
+  "prediction_results": [
+    {
+      "timestamp": "2026-08-01T00:00:00",
+      "open": 117.15603637695312,
+      "high": 126.83486938476562,
+      "low": 110.76702117919922,
+      "close": 120.44639587402344,
+      "volume": 135954.84375,
+      "amount": 18851940.0,
+      "close_lower": 120.44639587402344,
+      "close_median": 120.44639587402344,
+      "close_upper": 120.44639587402344,
+      "close_std": 0.0,
+      "up_probability": 1.0,
+      "interval_width": 0.0,
+      "relative_interval_width": 0.0,
+      "uncertainty_level": "low"
+    },
+    {
+      "timestamp": "2026-08-02T00:00:00",
+      "open": 112.06336975097656,
+      "high": 129.82154846191406,
+      "low": 85.81137084960938,
+      "close": 124.01005554199219,
+      "volume": 158491.859375,
+      "amount": 21408064.0,
+      "close_lower": 124.01005554199219,
+      "close_median": 124.01005554199219,
+      "close_upper": 124.01005554199219,
+      "close_std": 0.0,
+      "up_probability": 1.0,
+      "interval_width": 0.0,
+      "relative_interval_width": 0.0,
+      "uncertainty_level": "low"
+    }
+  ],
+  "actual_data": [],
+  "analysis": {}
+}

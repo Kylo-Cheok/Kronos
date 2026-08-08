@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-08-04T14:40:21.758884+00:00",
+  "provider": "akshare_tencent",
+  "providers": [
+    "akshare_tencent"
+  ],
+  "provider_version": "1.18.81",
+  "eligibility_provider": "akshare",
+  "frequency": "daily",
+  "adjustment": "raw",
+  "requested_range": {
+    "start": "20100101",
+    "end": "20260804"
+  },
+  "minimum_rows": 512,
+  "columns": [
+    "timestamps",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount"
+  ],
+  "eligibility": {
+    "csi300_symbol": "000300",
+    "csi300_rows_from_provider": 300,
+    "csi300_unique_codes_from_provider": 300,
+    "current_listed_code_rows": 5536,
+    "board_prefixes": {
+      "ChiNext": [
+        "300",
+        "301"
+      ],
+      "STAR": [
+        "688",
+        "689"
+      ]
+    },
+    "rule": "listed and (current CSI 300 member or current ChiNext/STAR prefix)"
+  },
+  "selection_policy": {
+    "default_count": 1,
+    "method": "ordered sector-leader preferences; one per broad sector first, then fallbacks",
+    "current_eligibility_is_required": true,
+    "fixed_symbols_are_not_an_eligibility_source": true
+  },
+  "records": [
+    {
+      "symbol": "600519",
+      "name": "贵州茅台",
+      "sector": "consumer",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap consumer staple leader preference (Kweichow Moutai).",
+      "file": "600519.csv",
+      "rows": 4021,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "53a97ce4178096cc4990bc819a526cfd3d11d9888bff19d646c94a94fa0e8237",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    }
+  ]
+}

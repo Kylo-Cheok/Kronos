@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-08-04T14:43:08.380829+00:00",
+  "provider": "akshare_tencent",
+  "providers": [
+    "akshare_tencent"
+  ],
+  "provider_version": "1.18.81",
+  "eligibility_provider": "akshare",
+  "frequency": "daily",
+  "adjustment": "raw",
+  "requested_range": {
+    "start": "20100101",
+    "end": "20260804"
+  },
+  "minimum_rows": 512,
+  "columns": [
+    "timestamps",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount"
+  ],
+  "eligibility": {
+    "csi300_symbol": "000300",
+    "csi300_rows_from_provider": 300,
+    "csi300_unique_codes_from_provider": 300,
+    "current_listed_code_rows": 5536,
+    "board_prefixes": {
+      "ChiNext": [
+        "300",
+        "301"
+      ],
+      "STAR": [
+        "688",
+        "689"
+      ]
+    },
+    "rule": "listed and (current CSI 300 member or current ChiNext/STAR prefix)"
+  },
+  "selection_policy": {
+    "default_count": 15,
+    "method": "ordered sector-leader preferences; one per broad sector first, then fallbacks",
+    "current_eligibility_is_required": true,
+    "fixed_symbols_are_not_an_eligibility_source": true
+  },
+  "records": [
+    {
+      "symbol": "600519",
+      "name": "贵州茅台",
+      "sector": "consumer",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap consumer staple leader preference (Kweichow Moutai).",
+      "file": "600519.csv",
+      "rows": 4021,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "53a97ce4178096cc4990bc819a526cfd3d11d9888bff19d646c94a94fa0e8237",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "600036",
+      "name": "招商银行",
+      "sector": "financials",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap commercial bank leader preference (China Merchants Bank).",
+      "file": "600036.csv",
+      "rows": 4006,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "7ee74b658dc667ec23413803628ca04622c5bb0a484660f06e20fb83e3207002",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "600276",
+      "name": "恒瑞医药",
+      "sector": "healthcare",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap innovative pharmaceutical leader preference (Hengrui).",
+      "file": "600276.csv",
+      "rows": 4020,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "1db7d9edce50e0a5b08581ed111f65429ad0e9afc92203025ebf61d546dbce0f",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "601857",
+      "name": "中国石油",
+      "sector": "energy",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap integrated energy leader preference (PetroChina).",
+      "file": "601857.csv",
+      "rows": 4022,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "b4e3709217c925ef22c6e24958501f595dd99843fd75ac39c5d048ad786fe9b7",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "688981",
+      "name": "中芯国际",
+      "sector": "semiconductors",
+      "eligible_via": [
+        "CSI300",
+        "STAR"
+      ],
+      "selection_rationale": "STAR Market semiconductor manufacturing leader preference (SMIC).",
+      "file": "688981.csv",
+      "rows": 1462,
+      "start": "2020-07-16",
+      "end": "2026-08-04",
+      "sha256": "00347ed7c7181d3eb419d2f72471fe9e49a9dc850272430cfcd2cf617003f58c",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "688111",
+      "name": "金山办公",
+      "sector": "software",
+      "eligible_via": [
+        "CSI300",
+        "STAR"
+      ],
+      "selection_rationale": "STAR Market office-software leader preference (Kingsoft Office).",
+      "file": "688111.csv",
+      "rows": 1628,
+      "start": "2019-11-18",
+      "end": "2026-08-04",
+      "sha256": "ca30a79fe81345f0a53a682f550d032adf3f9fb15e885d4e8aed22b581039c8d",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "300750",
+      "name": "宁德时代",
+      "sector": "new_energy",
+      "eligible_via": [
+        "CSI300",
+        "ChiNext"
+      ],
+      "selection_rationale": "ChiNext battery and EV-supply-chain leader preference (CATL).",
+      "file": "300750.csv",
+      "rows": 1978,
+      "start": "2018-06-11",
+      "end": "2026-08-04",
+      "sha256": "1a4af810b7a91be3aafcb046ede3ccb4968eb8cc21eebad517d5eb153bc3a5dd",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "601899",
+      "name": "紫金矿业",
+      "sector": "materials",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Mining and non-ferrous materials leader preference (Zijin Mining).",
+      "file": "601899.csv",
+      "rows": 3988,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "ca1666257900fd5642f5901a20be64aa927f084dd9c31deb81d65fbb1702868e",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "002415",
+      "name": "海康威视",
+      "sector": "electronics",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Large-cap electronic equipment leader preference (Hikvision).",
+      "file": "002415.csv",
+      "rows": 3876,
+      "start": "2010-05-28",
+      "end": "2026-08-04",
+      "sha256": "569b80e00f4e3fd717b7a2c11279e71bf507b07139c12edc60b14ada41077969",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "300059",
+      "name": "东方财富",
+      "sector": "fintech",
+      "eligible_via": [
+        "CSI300",
+        "ChiNext"
+      ],
+      "selection_rationale": "ChiNext financial-information platform leader preference (East Money).",
+      "file": "300059.csv",
+      "rows": 3913,
+      "start": "2010-03-19",
+      "end": "2026-08-04",
+      "sha256": "1ebfc2927de9fca9583b17ed43ab1341a83a4854669148e397824ee3d0badf8c",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "688169",
+      "name": "石头科技",
+      "sector": "consumer_durables",
+      "eligible_via": [
+        "STAR"
+      ],
+      "selection_rationale": "STAR Market smart-appliance leader preference (Roborock).",
+      "file": "688169.csv",
+      "rows": 1566,
+      "start": "2020-02-21",
+      "end": "2026-08-04",
+      "sha256": "01c27c0ed2488c75a1c86d9a3b1c6a1b89f5d6988381fc377e134c4258a9fd44",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "000333",
+      "name": "美的集团",
+      "sector": "consumer",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Consumer durable and appliance leader fallback (Midea Group).",
+      "file": "000333.csv",
+      "rows": 3066,
+      "start": "2013-09-18",
+      "end": "2026-08-04",
+      "sha256": "1ad08f317574719c1d82c7d1d94542701312d82f1f1b0fae010b8f45e0e75118",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "000858",
+      "name": "五 粮 液",
+      "sector": "consumer",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Consumer staple leader fallback (Wuliangye).",
+      "file": "000858.csv",
+      "rows": 3963,
+      "start": "2010-01-04",
+      "end": "2026-08-04",
+      "sha256": "d7f9b19dfd80dcc2b0caf91cf3c3a1114c39378276531fd75424e12332bbc261",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "300760",
+      "name": "迈瑞医疗",
+      "sector": "healthcare",
+      "eligible_via": [
+        "CSI300",
+        "ChiNext"
+      ],
+      "selection_rationale": "ChiNext medical-device leader fallback (Mindray).",
+      "file": "300760.csv",
+      "rows": 1894,
+      "start": "2018-10-16",
+      "end": "2026-08-04",
+      "sha256": "f6bbe3c9424f5cdc9b03e95bb42a837eebfbdb692e90fc2a807957366b17478f",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    },
+    {
+      "symbol": "601012",
+      "name": "隆基绿能",
+      "sector": "new_energy",
+      "eligible_via": [
+        "CSI300"
+      ],
+      "selection_rationale": "Renewable-energy equipment leader fallback (LONGi).",
+      "file": "601012.csv",
+      "rows": 3438,
+      "start": "2012-04-11",
+      "end": "2026-08-04",
+      "sha256": "667f950367707d9d188d5f5f117d489c33d7644446f7daa733cbceeaad589db5",
+      "provider": "akshare_tencent",
+      "provider_endpoint": "ak.stock_zh_a_hist_tx"
+    }
+  ]
+}
