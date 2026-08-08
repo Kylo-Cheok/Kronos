@@ -19,6 +19,7 @@ sys.path.append('../')
 from config import Config
 from dataset import QlibDataset
 from multihorizon_objective import (
+    FLAT_CLASS,
     MultiHorizonForecastHead,
     compute_multihorizon_objective,
 )
@@ -85,27 +86,96 @@ def train_model(
 
     train_loader, val_loader, train_dataset, valid_dataset = create_dataloaders(config, rank, world_size)
 
-    trainable_parameters = list(model.parameters()) + list(forecast_head.parameters())
-    optimizer = torch.optim.AdamW(
-        trainable_parameters,
-        lr=config['predictor_learning_rate'],
-        betas=(config['adam_beta1'], config['adam_beta2']),
-        weight_decay=config['adam_weight_decay']
+    freeze_backbone = config.get('freeze_backbone', False)
+    return_head_only = os.getenv("KRONOS_TRAIN_RETURN_HEAD_ONLY", "0") == "1"
+    if freeze_backbone:
+        # Frozen-backbone controlled experiment: only the MultiHorizonForecastHead
+        # is trainable.  The head starts from random init, so use the higher
+        # head_learning_rate.  The backbone is kept in eval mode (see below).
+        head_core = forecast_head.module if hasattr(forecast_head, "module") else forecast_head
+        if return_head_only:
+            for p in head_core.parameters():
+                p.requires_grad = False
+            for p in head_core.return_head.parameters():
+                p.requires_grad = True
+            trainable_parameters = list(head_core.return_head.parameters())
+            if rank == 0:
+                print("RETURN-HEAD-ONLY: freezing direction/trunk; training return_head")
+        else:
+            trainable_parameters = list(forecast_head.parameters())
+        learning_rate = config['head_learning_rate']
+        if rank == 0:
+            print("FROZEN-BACKBONE MODE: training MultiHorizonForecastHead only "
+                  f"(head_lr={learning_rate}, dir_weight={config['direction_loss_weight']})")
+        optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=learning_rate,
+            betas=(config['adam_beta1'], config['adam_beta2']),
+            weight_decay=config['adam_weight_decay']
+        )
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=learning_rate,
+            steps_per_epoch=len(train_loader), epochs=config['epochs'],
+            pct_start=0.03, div_factor=10
+        )
+    else:
+        # Joint mode: backbone uses predictor_lr (low, protects pretrained weights).
+        # The head starts from random init and needs a higher lr; allow override
+        # via KRONOS_JOINT_HEAD_LR so the head is not starved by the tiny backbone lr.
+        joint_head_lr = float(os.getenv("KRONOS_JOINT_HEAD_LR", str(config['predictor_learning_rate'])))
+        param_groups = [
+            {"params": list(model.parameters()), "lr": config['predictor_learning_rate']},
+            {"params": list(forecast_head.parameters()), "lr": joint_head_lr},
+        ]
+        if rank == 0:
+            print(f"JOINT MODE: backbone_lr={config['predictor_learning_rate']}, "
+                  f"head_lr={joint_head_lr}, dir_weight={config['direction_loss_weight']}")
+        optimizer = torch.optim.AdamW(
+            param_groups,
+            betas=(config['adam_beta1'], config['adam_beta2']),
+            weight_decay=config['adam_weight_decay']
+        )
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=[config['predictor_learning_rate'], joint_head_lr],
+            steps_per_epoch=len(train_loader), epochs=config['epochs'],
+            pct_start=0.03, div_factor=10
+        )
+
+    # Build optional class weights for the 3-class direction loss.
+    # Upweighting UP/DOWN prevents the head from collapsing to FLAT.
+    class_weights = None
+    if config.get('direction_class_weights'):
+        class_weights = torch.tensor(
+            config['direction_class_weights'], dtype=torch.float32, device=device
+        )
+        if rank == 0:
+            print(f"Direction class weights (down/flat/up): {config['direction_class_weights']}")
+
+    # Optional per-horizon weights for the direction loss (Phase 7, R6).
+    # Comma-separated, e.g. "1,1,1,2.5" to emphasize h=10.  None = uniform.
+    import os as _os
+    _raw_hw = _os.getenv("KRONOS_DIRECTION_HORIZON_WEIGHTS", "").strip()
+    horizon_weights = (
+        [float(x) for x in _raw_hw.split(",")] if _raw_hw else None
     )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=config['predictor_learning_rate'],
-        steps_per_epoch=len(train_loader), epochs=config['epochs'],
-        pct_start=0.03, div_factor=10
-    )
+    if horizon_weights is not None and rank == 0:
+        print(f"Direction horizon weights {config['forecast_horizons']}: {horizon_weights}")
 
     best_val_loss = float('inf')
+    best_val_direction_accuracy = 0.0
+    best_val_direction_accuracy_by_horizon = [0.0] * len(config['forecast_horizons'])
+    best_val_nonflat_accuracy = 0.0
+    best_val_nonflat_accuracy_by_horizon = [0.0] * len(config['forecast_horizons'])
     stale_epochs = 0
     dt_result = {}
     batch_idx_global = 0
 
     for epoch_idx in range(config['epochs']):
         epoch_start_time = time.time()
-        model.train()
+        if not freeze_backbone:
+            model.train()
+        # When backbone is frozen, keep it in eval mode (no dropout/bn updates)
+        # and only put the forecast head into train mode.
         forecast_head.train()
         train_loader.sampler.set_epoch(epoch_idx)
 
@@ -148,19 +218,31 @@ def train_model(
                 min_deadzone=config['direction_min_deadzone'],
                 volatility_multiplier=config['direction_volatility_multiplier'],
                 huber_delta=config['return_huber_delta'],
+                class_weights=class_weights,
+                consistency_loss_weight=config['consistency_loss_weight'],
+                horizon_weights=horizon_weights,
+                direction_loss_type=config['direction_loss_type'],
+                focal_gamma=config['focal_gamma'],
+                label_smoothing=config['direction_label_smoothing'],
+                swap_penalty_weight=config['swap_penalty_weight'],
             )
             return_loss = forecast_result['return_loss']
             direction_loss = forecast_result['direction_loss']
+            consistency_loss = forecast_result['consistency_loss']
+            swap_penalty = forecast_result['swap_penalty']
             loss = (
                 token_loss
                 + config['return_loss_weight'] * return_loss
                 + config['direction_loss_weight'] * direction_loss
+                + config['consistency_loss_weight'] * consistency_loss
+                + config['swap_penalty_weight'] * swap_penalty
             )
 
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=3.0)
+            clip_params = [p for group in optimizer.param_groups for p in group["params"]]
+            torch.nn.utils.clip_grad_norm_(clip_params, max_norm=3.0)
             optimizer.step()
             scheduler.step()
 
@@ -203,6 +285,12 @@ def train_model(
         tot_val_direction_correct_by_horizon_rank = torch.zeros(
             len(config['forecast_horizons']), device=device
         )
+        tot_val_nonflat_correct_by_horizon_rank = torch.zeros(
+            len(config['forecast_horizons']), device=device
+        )
+        tot_val_nonflat_points_by_horizon_rank = torch.zeros(
+            len(config['forecast_horizons']), device=device
+        )
         tot_val_direction_points_rank = 0
         val_batches_processed_rank = 0
         with torch.no_grad():
@@ -237,13 +325,24 @@ def train_model(
                     min_deadzone=config['direction_min_deadzone'],
                     volatility_multiplier=config['direction_volatility_multiplier'],
                     huber_delta=config['return_huber_delta'],
+                    class_weights=class_weights,
+                consistency_loss_weight=config['consistency_loss_weight'],
+                horizon_weights=horizon_weights,
+                direction_loss_type=config['direction_loss_type'],
+                focal_gamma=config['focal_gamma'],
+                label_smoothing=config['direction_label_smoothing'],
+                swap_penalty_weight=config['swap_penalty_weight'],
                 )
                 val_return_loss = forecast_result['return_loss']
                 val_direction_loss = forecast_result['direction_loss']
+                val_consistency_loss = forecast_result['consistency_loss']
+                val_swap_penalty = forecast_result['swap_penalty']
                 val_loss = (
                     val_token_loss
                     + config['return_loss_weight'] * val_return_loss
                     + config['direction_loss_weight'] * val_direction_loss
+                    + config['consistency_loss_weight'] * val_consistency_loss
+                    + config['swap_penalty_weight'] * val_swap_penalty
                 )
 
                 tot_val_loss_sum_rank += val_loss.item()
@@ -255,6 +354,14 @@ def train_model(
                     * batch_x.shape[0]
                 )
                 tot_val_direction_points_rank += batch_x.shape[0]
+                # Non-flat accuracy: among UP/DOWN targets, how many were correct?
+                pred_dir = forecast_result['outputs']['direction_logits'].argmax(dim=-1)  # [B, H]
+                target_dir = forecast_result['targets']['direction']  # [B, H]
+                nonflat_mask = target_dir != FLAT_CLASS  # [B, H]
+                tot_val_nonflat_points_by_horizon_rank += nonflat_mask.sum(dim=0)
+                tot_val_nonflat_correct_by_horizon_rank += (
+                    (pred_dir == target_dir) & nonflat_mask
+                ).sum(dim=0)
                 val_batches_processed_rank += 1
 
         # Reduce validation metrics
@@ -272,6 +379,8 @@ def train_model(
             dist.all_reduce(val_direction_loss_tensor, op=dist.ReduceOp.SUM)
             dist.all_reduce(tot_val_direction_correct_by_horizon_rank, op=dist.ReduceOp.SUM)
             dist.all_reduce(val_direction_points_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(tot_val_nonflat_correct_by_horizon_rank, op=dist.ReduceOp.SUM)
+            dist.all_reduce(tot_val_nonflat_points_by_horizon_rank, op=dist.ReduceOp.SUM)
 
         avg_val_loss = val_loss_sum_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
         avg_val_token_loss = val_token_loss_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
@@ -283,6 +392,12 @@ def train_model(
             else torch.zeros(len(config['forecast_horizons']), device=device)
         )
         avg_val_direction_accuracy = avg_val_direction_accuracy_by_horizon.mean().item()
+        avg_val_nonflat_accuracy_by_horizon = torch.where(
+            tot_val_nonflat_points_by_horizon_rank > 0,
+            tot_val_nonflat_correct_by_horizon_rank / tot_val_nonflat_points_by_horizon_rank.clamp(min=1),
+            torch.zeros_like(tot_val_nonflat_points_by_horizon_rank),
+        )
+        avg_val_nonflat_accuracy = avg_val_nonflat_accuracy_by_horizon.mean().item()
 
         # --- End of Epoch Summary & Checkpointing (Master Process Only) ---
         if rank == 0:
@@ -292,7 +407,8 @@ def train_model(
                 f"Validation Token Loss: {avg_val_token_loss:.4f}, "
                 f"Return Loss: {avg_val_return_loss:.4f}, "
                 f"Direction Loss: {avg_val_direction_loss:.4f}, "
-                f"Direction Accuracy: {avg_val_direction_accuracy:.2%}"
+                f"Direction Accuracy: {avg_val_direction_accuracy:.2%}, "
+                f"Non-Flat Accuracy: {avg_val_nonflat_accuracy:.2%}"
             )
             print(
                 "Validation Direction by Horizon: "
@@ -301,6 +417,16 @@ def train_model(
                     for horizon, accuracy in zip(
                         config['forecast_horizons'],
                         avg_val_direction_accuracy_by_horizon,
+                    )
+                )
+            )
+            print(
+                "Validation Non-Flat by Horizon: "
+                + ", ".join(
+                    f"h{horizon}={accuracy.item():.2%}"
+                    for horizon, accuracy in zip(
+                        config['forecast_horizons'],
+                        avg_val_nonflat_accuracy_by_horizon,
                     )
                 )
             )
@@ -321,8 +447,20 @@ def train_model(
                         epoch=epoch_idx,
                     )
 
+            # Checkpoint selection: val_loss changes are driven by direction_loss
+            # in frozen mode (token_loss is constant), and lower direction_loss
+            # generalises better than higher non-flat accuracy (verified
+            # empirically: non-flat-based selection overfits the val set).
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
+                best_val_direction_accuracy = avg_val_direction_accuracy
+                best_val_direction_accuracy_by_horizon = [
+                    float(x) for x in avg_val_direction_accuracy_by_horizon
+                ]
+                best_val_nonflat_accuracy = avg_val_nonflat_accuracy
+                best_val_nonflat_accuracy_by_horizon = [
+                    float(x) for x in avg_val_nonflat_accuracy_by_horizon
+                ]
                 stale_epochs = 0
                 save_path = f"{save_dir}/checkpoints/best_model"
                 model_core = model.module if hasattr(model, "module") else model
@@ -342,7 +480,7 @@ def train_model(
                     },
                     os.path.join(save_path, 'multihorizon_head.pt'),
                 )
-                print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
+                print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f}, NonFlat: {avg_val_nonflat_accuracy:.2%})")
             else:
                 stale_epochs += 1
 
@@ -366,9 +504,20 @@ def train_model(
             dist.barrier()
 
     dt_result['best_val_loss'] = best_val_loss
+    dt_result['best_val_direction_accuracy'] = best_val_direction_accuracy
+    dt_result['best_val_direction_accuracy_by_horizon'] = [
+        float(x) for x in best_val_direction_accuracy_by_horizon
+    ]
+    dt_result['best_val_nonflat_accuracy'] = best_val_nonflat_accuracy
+    dt_result['best_val_nonflat_accuracy_by_horizon'] = [
+        float(x) for x in best_val_nonflat_accuracy_by_horizon
+    ]
     dt_result['forecast_horizons'] = list(config['forecast_horizons'])
     dt_result['return_loss_weight'] = config['return_loss_weight']
     dt_result['direction_loss_weight'] = config['direction_loss_weight']
+    dt_result['direction_class_weights'] = config.get('direction_class_weights')
+    dt_result['freeze_backbone'] = config.get('freeze_backbone', False)
+    dt_result['head_learning_rate'] = config.get('head_learning_rate', None)
     return dt_result
 
 
@@ -411,9 +560,25 @@ def main(config: dict):
     tokenizer = KronosTokenizer.from_pretrained(config['finetuned_tokenizer_path'])
     tokenizer.eval().to(device)
 
-    model = Kronos.from_pretrained(config['pretrained_predictor_path'])
+    # Optional warm-start from a prior multihorizon experiment checkpoint.
+    # KRONOS_INIT_PREDICTOR_FROM: path to best_model dir (backbone weights)
+    # KRONOS_INIT_HEAD_FROM: path to multihorizon_head.pt (or best_model dir)
+    init_predictor = os.getenv("KRONOS_INIT_PREDICTOR_FROM", "").strip()
+    predictor_source = init_predictor or config['pretrained_predictor_path']
+    model = Kronos.from_pretrained(predictor_source)
     model.to(device)
-    if dist.is_initialized():
+    if rank == 0 and init_predictor:
+        print(f"Warm-start backbone from: {init_predictor}")
+    freeze_backbone = config.get('freeze_backbone', False)
+    if freeze_backbone:
+        # Freeze the entire Kronos backbone; only the forecast head trains.
+        for p in model.parameters():
+            p.requires_grad = False
+        model.eval()
+        if rank == 0:
+            print("Backbone frozen (requires_grad=False); model kept in eval mode.")
+        # Do not DDP-wrap the frozen model (no trainable params to sync).
+    elif dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
     model_core = model.module if hasattr(model, "module") else model
     forecast_head = MultiHorizonForecastHead(
@@ -422,6 +587,16 @@ def main(config: dict):
         pool_size=config['forecast_pool_size'],
         dropout=config['forecast_head_dropout'],
     ).to(device)
+    init_head = os.getenv("KRONOS_INIT_HEAD_FROM", "").strip()
+    if init_head:
+        head_path = init_head
+        if os.path.isdir(head_path):
+            head_path = os.path.join(head_path, "multihorizon_head.pt")
+        head_ckpt = torch.load(head_path, map_location=device, weights_only=False)
+        state = head_ckpt["state_dict"] if isinstance(head_ckpt, dict) and "state_dict" in head_ckpt else head_ckpt
+        forecast_head.load_state_dict(state)
+        if rank == 0:
+            print(f"Warm-start forecast head from: {head_path}")
     if dist.is_initialized():
         forecast_head = DDP(
             forecast_head,

@@ -65,6 +65,17 @@ class QlibDataset(Dataset):
         self.symbols = list(self.data.keys())
         if set(self.symbols) != set(manifest.get("symbols", [])):
             raise ValueError("Dataset symbols do not match manifest.json")
+        # Optional training subset: comma-separated symbols via KRONOS_SYMBOL_FILTER.
+        # Useful for related-peer experiments without rebuilding pickles.
+        import os
+        raw_filter = os.getenv("KRONOS_SYMBOL_FILTER", "").strip()
+        if raw_filter:
+            allowed = {s.strip() for s in raw_filter.split(",") if s.strip()}
+            missing = allowed - set(self.symbols)
+            if missing:
+                raise ValueError(f"KRONOS_SYMBOL_FILTER symbols not in dataset: {sorted(missing)}")
+            self.symbols = [s for s in self.symbols if s in allowed]
+            print(f"[{data_type.upper()}] Symbol filter active: {len(self.symbols)} symbols")
         self.feature_list = self.config.feature_list
         self.time_feature_list = self.config.time_feature_list
 
